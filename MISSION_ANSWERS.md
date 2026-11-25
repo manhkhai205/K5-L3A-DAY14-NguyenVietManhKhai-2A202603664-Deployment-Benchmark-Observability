@@ -195,7 +195,44 @@ curl -X POST http://localhost/ask \
 
 ## Part 3: Cloud Deployment
 
-<!-- TODO: Điền URL public, so sánh railway.toml vs render.yaml, và mô tả Cloud Run pipeline (Exercise 3.3) -->
+### Exercise 3.1: Deploy agent Part 6 lên Railway
+
+- **Public URL:** https://k5-l3a-day14-nguyenvietmanhkhai-2a202603664-depl-production.up.railway.app
+- **Chi tiết triển khai & biến môi trường:** Xem [DEPLOYMENT.md](DEPLOYMENT.md)
+- **Ảnh chụp màn hình:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
+
+**Kết quả kiểm tra 4 lệnh CP6 trên URL public:**
+
+| Endpoint | Điều kiện | HTTP Code | Response thực tế |
+| :--- | :--- | :---: | :--- |
+| `GET /health` | Không cần key | **200** | `{"status":"ok","environment":"production"}` |
+| `GET /ready` | Kết nối Redis Railway | **200** | `{"status":"ready","redis":"ok"}` |
+| `POST /ask` | Không gửi `X-API-Key` | **401** | `{"detail":"Invalid or missing API key"}` |
+| `POST /ask` | Gửi `X-API-Key: $AGENT_API_KEY` | **200** | `{"question":"Hello","answer":"Đây là câu trả lời từ AI agent (mock)...","cost_usd":2.07e-05}` |
+
+---
+
+### So sánh `railway.toml` vs `render.yaml`
+
+| Tiêu chí | [06-lab-complete/railway.toml](06-lab-complete/railway.toml) | [06-lab-complete/render.yaml](06-lab-complete/render.yaml) |
+| :--- | :--- | :--- |
+| **Định dạng** | TOML (`[build]`, `[deploy]`) | YAML (Blueprint schema: `services:`) |
+| **Phạm vi cấu hình** | Chỉ cấu hình build & deploy cho **một service** hiện tại; Redis và biến môi trường được thêm/quản lý riêng trên Railway Dashboard hoặc CLI. | Khai báo **Infrastructure-as-Code cho cả stack** trong 1 file (tên service, runtime, plan, `envVars`, và có thể khai báo kèm Redis/DB). |
+| **Health check** | `healthcheckPath = "/health"`, `healthcheckTimeout = 30` | `healthCheckPath: /health` |
+| **Quản lý biến môi trường & Secrets** | Không khai báo secret trong file; cấu hình trực tiếp trên dashboard hoặc qua `railway variables set` (và reference tới Redis plugin). | Khai báo danh sách `envVars` ngay trong YAML; dùng `generateValue: true` (Render tự sinh chuỗi ngẫu nhiên) hoặc `sync: false` (nhập tay trên dashboard khi tạo Blueprint) để không lộ secret vào Git. |
+| **Restart & Cơ chế deploy** | Hỗ trợ `restartPolicyType = "ON_FAILURE"` + `restartPolicyMaxRetries = 3`; có thể deploy nhanh từ máy bằng `railway up` hoặc nối GitHub. | Quản lý theo Render Blueprint sync trực tiếp từ GitHub repository. |
+
+**Vì sao có sự khác biệt này:** Railway thiết kế theo hướng *service-first* (mỗi service đọc `railway.toml` riêng còn hạ tầng phụ trợ & env vars gắn trực tiếp trên canvas/project), còn Render Blueprint dùng `render.yaml` làm đặc tả IaC tổng thể để tái tạo toàn bộ dịch vụ và cấu hình môi trường từ một lần import GitHub repo.
+
+---
+
+### Exercise 3.3: Mô tả pipeline CI/CD GCP Cloud Run
+
+Dựa trên [cloudbuild.yaml](03-cloud-deployment/production-cloud-run/cloudbuild.yaml) và [service.yaml](03-cloud-deployment/production-cloud-run/service.yaml), pipeline CI/CD tự động chạy khi push lên nhánh `main` qua 4 bước tuần tự (`waitFor`):
+1. **`test`** (`python:3.11-slim`): cài đặt `requirements.txt` + `pytest` và chạy `pytest tests/ -v --tb=short`; chỉ khi test pass mới đi tiếp.
+2. **`build`** (`gcr.io/cloud-builders/docker`): build Docker image từ `.`, gắn đồng thời 2 tag `$COMMIT_SHA` và `latest`, tận dụng `--cache-from` để tăng tốc build.
+3. **`push`** (`gcr.io/cloud-builders/docker`): đẩy toàn bộ tag image lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
+4. **`deploy`** (`gcr.io/cloud-builders/gcloud`): triển khai bản `$COMMIT_SHA` lên Cloud Run (`asia-southeast1`), cấu hình `--min-instances=1` (giảm cold start), `--max-instances=10`, `512Mi`/1 vCPU, và inject secret từ Secret Manager (`--set-secrets`). Song song đó, `service.yaml` định nghĩa hạ tầng Knative (IaC) với `containerConcurrency: 80`, `livenessProbe` (`/health`) và `startupProbe` (`/ready`).
 
 ---
 
@@ -449,3 +486,5 @@ Chạy `python check_production_ready.py` trong `06-lab-complete/` (chế độ 
 | 2026-11-25 | CP3 (Part 4) | Nhờ chạy kiểm tra Exercise 4.1 (`401`/`200`), che JWT token và tổng hợp output test `curl -i` + giải thích rate limit/cost guard vào Part 4 của `MISSION_ANSWERS.md`. | Đã tự chạy `04-api-gateway/production/app.py`, lấy JWT token cho `student`, test sai token (`403`), hợp lệ (`200`) và vòng lặp 15 lần chạm giới hạn `429`; chạy thêm Exercise 4.1 để lấy output `401` và `200`. |
 | 2026-11-25 | CP4 (Part 5) | Nhờ tổng hợp kết quả health/readiness, graceful shutdown và kiểm thử stateless 3 instance vào Part 5 của `MISSION_ANSWERS.md`. | Đã tự chạy `05-scaling-reliability/develop/app.py` với `kill -TERM`, scale stack `k5-day14-scaling` lên 3 agent với Nginx + Redis và chạy `test_stateless.py`. |
 | 2026-11-25 | CP5 (Part 6) | Nhờ hoàn thiện các TODO trong `06-lab-complete/` (config, auth, Redis rate limit/cost guard, JSON logging, health/ready, Dockerfile multi-stage, Compose, railway.toml/render.yaml). | Đã rà soát toàn bộ mã nguồn, chạy `python check_production_ready.py` chế độ đầy đủ có Docker trong WSL và kiểm chứng đạt `PASS 12/12` (`43/43 checks passed`). |
+| 2026-11-25 | CP6 (Part 3) | Nhờ kiểm tra 4 endpoint trên URL Railway public, viết `DEPLOYMENT.md`, so sánh `railway.toml` vs `render.yaml` và tóm tắt pipeline Cloud Run vào Part 3 của `MISSION_ANSWERS.md`. | Đã tự tạo service agent + Redis trên Railway, cấu hình biến môi trường (`AGENT_API_KEY`, `REDIS_URL`, `ENVIRONMENT`), deploy thành công và đối chiếu với `cloudbuild.yaml`/`service.yaml`. |
+| 2026-11-25 | CP7 (Part 7 Bước 1) | Nhờ chạy benchmark hiệu năng (`load_test.py`) và eval (`run_eval.py`), sửa `KNOWLEDGE_BASE`, viết `.github/workflows/eval.yml` và tổng hợp số liệu vào `BENCHMARK_REPORT.md`. | Đã kiểm chứng toàn bộ 10 file JSON trong `reports/`, xác nhận `eval_v2_fixed.json` đạt `23/23` (`100%`, 0 regression) và đối chiếu từng con số trong báo cáo khớp với JSON. |
